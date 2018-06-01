@@ -112,17 +112,31 @@ function graph(fn, d1, d2, d3) { // graphs y=f(x) from -10 to 10
     let p; let gp;
     let N = 400;
     let points = cached([N+1, 3]);
+    let asyms = cached([N+1, 1])._data;
     let pd = points._data;
 
+    let dx = 20/N;
+
     let i = 0;
-    for (let x = -10; x < 10; x += .05) {
+    let x = -10;
+    let y_last = fn(x)
+    for (; x < 10; x += dx) {
         y = fn(x);
-        y = Math.max(Math.min(y, 1000), -1000);
 
         pd[i][d1] = x;
-        pd[i][d2] = y;
+        pd[i][d2] = Math.max(Math.min(y, 10000), -10000);
         pd[i][d3] = 0;
 
+        asyms[i] = 0;
+        if (math.abs(y-y_last) > 20) {
+            // vertical asymptote
+            asyms[i] = 1;
+
+            pd[i-1][d2] = math.sign(pd[i-1][d2]) * 1000;
+            pd[i][d2] = math.sign(y) * 1000;
+        }
+
+        y_last = y;
         i ++;
     }
 
@@ -131,6 +145,14 @@ function graph(fn, d1, d2, d3) { // graphs y=f(x) from -10 to 10
     ctx.beginPath();
     for (let i = 0; i < N; i++) {
         p = points[i];
+
+        if (asyms[i]) {
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(p[0], p[1]);
+            continue;
+        }
+
         if (i == 0) {
             ctx.moveTo(p[0], p[1]);
         } else {
@@ -138,15 +160,6 @@ function graph(fn, d1, d2, d3) { // graphs y=f(x) from -10 to 10
         }
     }
     ctx.stroke();
-
-    gp = {x: mouse_graph.x, y: fn(mouse_graph.x)};
-    if (ctrl && mouse_graph.x > -10 && mouse_graph.x < 10 && distance(mouse_graph, gp) < .2) {
-        p = cam.graph_to_screen(gp.x, gp.y, 0);
-        ctx.fillText('('+pretty_round(gp.x)+', '+pretty_round(gp.y)+')', p[0], p[1] - grid_size);
-        ctx.beginPath();
-        ctx.arc(p[0], p[1], point_size, 0, pi2);
-        ctx.fill();
-    }
 }
 
 function para(r, tmin, tmax, units) { // graphs x=f(t) y=g(t) z=h(t) from tmin to tmax, units shows markers every 1 increment in t
@@ -473,30 +486,34 @@ math.import({
             return;
         }
 
-        col = [0,0,0];
         if (color) {
-            col = color._data;
-            col = [constrain(col[0]), constrain(col[1]), constrain(col[2])];
+            color = color._data;
+            color = [constrain(color[0]), constrain(color[1]), constrain(color[2])];
         }
 
         let cam_data = cam.graph_to_screen_mat(math.matrix([a]))[0];
         
         ctx.save();
         ctx.beginPath();
-        ctx.fillStyle = rgbToHex(math.multiply(col, 255));
+        if (color) {
+            ctx.fillStyle = rgbToHex(math.multiply(color, 255));
+        }
         ctx.arc(cam_data[0], cam_data[1], psize, 0, pi2);
         ctx.fill();
 
         ctx.restore();
     },
-    graph: function(fn) {
+    graph: function(fn) { // graphs y=f(x)
         graph(fn, 0, 1, 2);
     },
-    para: function(r, tmin, tmax, units) { // graphs r(t)=[f(t), g(t), h(t)] from t=tmin to tmax
+    paral: function(r, tmin, tmax, units) { // parametric line, graphs r(t)=[f(t), g(t), h(t)] from t=tmin to tmax
         para(r, tmin, tmax, units);
     },
-    graphxy: function(fn) {
+    graphxy: function(fn) { // graphs y=f(x)
         graph(fn, 0, 1, 2);
+    },
+    graphyx: function(fn) { // graphs x=f(y)
+        graph(fn, 1, 0, 2);
     },
     graphxz: function(fn) {
         graph(fn, 0, 2, 1);
@@ -706,7 +723,7 @@ math.import({
             }
         }
     },
-    field_a: function(f, _n, _uv) { // plots an animated vector field f(x,y,z) using a grid, _n # vectors, _uv force unit length
+    fielda: function(f, _n, _uv) { // plots an animated vector field f(x,y,z) using a grid, _n # vectors, _uv force unit length
         let n = 10;
         let uv = false;
         
@@ -749,7 +766,7 @@ math.import({
         }
         ctx.restore();
     },
-    parametric: function(f, _ur, _vr, _n, ucol, vcol) {
+    paras: function(r, _ur, _vr, _n=1, f) { // parametric surface r(u,v) with optional field f
         let n = 10;
 
         if (_ur <= 0 || _vr <= 0 || n <= 0) {
@@ -760,24 +777,13 @@ math.import({
             n = _n;
         }
 
-        let color = false;
-        if (arguments.length >= 6) {
-            color = true;
-        }
-
         let du = _ur/n;
         let dv = _vr/n;
 
         ctx.save();
-        ctx.strokeStyle = 'black';
 
         let u = 0;
         let v = 0;
-
-        // draw v lines
-        if (color) {
-            ctx.strokeStyle = vcol;
-        }
 
         for (let i = 0; i <= n; i ++) {
             u = du * i;
@@ -786,7 +792,7 @@ math.import({
             for (let j = 0; j <= n; j ++) {
                 v = dv * j;
 
-                let p = f(u, v)._data;
+                let p = r(u, v)._data;
                 let camp = cam.graph_to_screen(p[0], p[1], p[2]);            
                 if (v == 0) {
                     ctx.moveTo(camp[0], camp[1]);
@@ -797,11 +803,6 @@ math.import({
             ctx.stroke();
         }
 
-        // draw u lines
-        if (color) {
-            ctx.strokeStyle = ucol;
-        }
-
         for (let i = 0; i <= n; i ++) {
             v = dv * i;
 
@@ -809,7 +810,7 @@ math.import({
             for (let j = 0; j <= n; j ++) {
 
                 u = du * j;
-                let p = f(u, v)._data;
+                let p = r(u, v)._data;
                 let camp = cam.graph_to_screen(p[0], p[1], p[2]);            
                 if (u == 0) {
                     ctx.moveTo(camp[0], camp[1]);
@@ -820,7 +821,20 @@ math.import({
             ctx.stroke();
         }
 
-        
+        if (f) {
+            for (let i = 0; i <= n; i ++) {
+                u = du * i;
+    
+                for (let j = 0; j <= n; j ++) {
+                    v = dv * j;
+    
+                    let p = r(u, v)._data;
+                    
+                    let vect = f(p[0], p[1], p[2])._data;
+                    draw_vect(p[0], p[1], p[2], p[0]+vect[0], p[1]+vect[1], p[2]+vect[2]);
+                }
+            }
+        }
 
         ctx.restore();
     },
@@ -1318,12 +1332,6 @@ function draw_fn(fn) {
     ctx.restore();
 
     return size;
-}
-
-function function_before_i(text, c) {
-    text = text.slice(0, c);
-    let s = text.split(/[^A-Za-z]/);
-    return s.pop();
 }
 
 function get_mouse_pos(canvas, evt) {
@@ -2450,60 +2458,57 @@ function Text(text, pos) {
         ctx.fillStyle = color;
         ctx.globalAlpha = i.c[3];
 
-        //console.log(this.args);
-
         try {
             let val = c.eval(parser.scope);
 
-            let type = typeof val;
-            
-            if (type == "number" && this.command == "i") {
-                // save value in properties
-                this.properties[frame]['ival'] = val;
-            }
+            // only display the value if its not an assignment
+            let op_type = math.parse(this.args[0]).type;
+            if (op_type.indexOf("Assignment") == -1) {
+                let type = typeof val;
 
-            // set display text
-            if (type == "number") {
-                if (ctrl) {
-                    // nothing
-                    this.text_val = ' = ' + val;
-                } else {
-                    this.text_val = ' = ' + pretty_round(val);
-                }
-                
-            } else if (type == "object" && val._data && val._data.length != 0) {
-                // prob a matrix, render entries
-                let t = [];
-
-                if (val._data) {
-                    val = val.map(function (value, index, matrix) {
-                        return pretty_round(value);
-                    });
-
-                    let d = val._data;
-                    if (val._size.length == 1) {
-                        t = [d.join(' ')];
-                    } else {
-                        for (let r = 0; r < d.length; r++) {
-                            t.push(d[r].join(' '));
-                        }
-                    }
-                }
-
-                this.matrix_vals = t;
-                this.text_val = null;
-            } else if (val && 're' in val && val.im) {
-                if (val) {
+                // set display text
+                if (type == "number") {
                     if (ctrl) {
                         // nothing
-                        this.text_val = ' = ' + val;
+                        this.text_val = '=' + val;
                     } else {
-                        this.text_val = ' = ' + pretty_round(val.re).toString() + ' + ' + pretty_round(val.im).toString() +'i';
+                        this.text_val = '=' + pretty_round(val);
                     }
-                }
-            } else {
-                if (val) {
-                    this.text_val = ' = ' + val.toString();
+                    
+                } else if (type == "object" && val._data && val._data.length != 0) {
+                    // prob a matrix, render entries
+                    let t = [];
+
+                    if (val._data) {
+                        val = val.map(function (value, index, matrix) {
+                            return pretty_round(value);
+                        });
+
+                        let d = val._data;
+                        if (val._size.length == 1) {
+                            t = [d.join(' ')];
+                        } else {
+                            for (let r = 0; r < d.length; r++) {
+                                t.push(d[r].join(' '));
+                            }
+                        }
+                    }
+
+                    this.matrix_vals = t;
+                    this.text_val = null;
+                } else if (val && 're' in val && val.im) {
+                    if (val) {
+                        if (ctrl) {
+                            // nothing
+                            this.text_val = '=' + val;
+                        } else {
+                            this.text_val = '=' + pretty_round(val.re).toString() + ' + ' + pretty_round(val.im).toString() +'i';
+                        }
+                    }
+                } else {
+                    if (val) {
+                        this.text_val = '=' + val.toString();
+                    }
                 }
             }
         } catch (e) {
@@ -2609,7 +2614,7 @@ function Text(text, pos) {
                     }
 
                     let new_val = old_val + delta;
-                    this.text_val = ' = ' + pretty_round(new_val);
+                    this.text_val = '=' + pretty_round(new_val);
 
                     try {
                         parser.set(var_name, new_val);
@@ -2683,28 +2688,8 @@ function Text(text, pos) {
         this.dragged = false;
     }
 
-    this.graphing = function() {
-        let cs = ["tangent", "graph", "point", "scatter", "drag", "line", "contour"];
-
-        if (cs.indexOf(this.command) != -1) {
-            return true;
-        }
-
-        return false;
-    }
-
     this.draw_text = function(ctx, t) {
         let size;
-
-        let draw_val = false;
-        if (this.command == "e" || this.command == "slide") {
-            // draw the value
-            if (presenting) {
-                t = t.split(":")[1];
-            }
-
-            draw_val = true;
-        }
 
         if (this.command == "f" && !this.is_selected()) {
             let fn = t.slice(this.command.length+1); //+1 for semicolon
@@ -2749,27 +2734,21 @@ function Text(text, pos) {
             ctx.restore();
         }
 
-        if (draw_val) {
-            if (this.matrix_vals.length != 0) {
-                ctx.save();
-                ctx.translate(size.w + grid_size, 0);
+        if (this.matrix_vals.length != 0) {
+            ctx.save();
+            ctx.translate(size.w + grid_size, 0);
 
-                for (let i = 0; i < this.matrix_vals.length; i++) {
-                    ctx.textAlign = 'left';
-                    ctx.fillText(this.matrix_vals[i], 0, grid_size * i);
-                }
-
-                ;
-                size.w = size.w + grid_size + (this.matrix_vals[0].length + 1) * char_size;
-                size.h = this.matrix_vals.length * grid_size;
-                
-                ctx.restore();
-            } else {
-                ctx.save();
-                ctx.translate(size.w, 0);
-                size.w = size.w + draw_simple(this.text_val);
-                ctx.restore();
+            for (let i = 0; i < this.matrix_vals.length; i++) {
+                ctx.textAlign = 'left';
+                ctx.fillText(this.matrix_vals[i], 0, grid_size * i);
             }
+            
+            ctx.restore();
+        } else if (!this.selected && this.text_val && this.text_val.length) {
+            ctx.save();
+            ctx.translate(size.w, 0);
+            size.w = size.w + draw_simple(this.text_val);
+            ctx.restore();
         }
 
         return size;
@@ -2780,62 +2759,40 @@ function Text(text, pos) {
         this.args = [];
         this.cargs = [];
 
+        // replace @ with anonymous fn name
         if (text && text.length) {
-            // anonymous functions
             let split = text.split("@");
             let new_t = "";
             let N = split.length;
             for (let i = 0; i < N-1; i++) {
-                new_t += split[i] + "anon"+guid().slice(0,8)+"()=";
+                new_t += split[i] + "anon"+guid().slice(0,8);
             }
             new_t += split[N-1]
             text = new_t;
         }
 
-        //console.log(text);
-
         if (!text) {
             return;
-        } else if (text.indexOf(':') == -1) {
-            this.args = [text];
+        } else if (text.indexOf(':') != -1) {
+            let split = text.split(":");
+            this.command = split[0];
+            this.args = [split[1]];
+
             try {
                 this.cargs = math.compile(this.args);
             } catch(e) {
                 console.log('compile2 error: ');
                 console.log(e);
             }
-            return;
-        }
+        } else {
+            this.args = [text];
 
-        // find top level command and args
-        let N = text.length;
-        let p = 0;
-        let s = 0;
-
-        for (let i = 0; i < N; i++) {
-            let c = text[i];
-
-            if (c == "(" || c == "[") {
-                p += 1;
-            } else if (c == ")" || c == "]") {
-                p -= 1;
+            try {
+                this.cargs = math.compile(this.args);
+            } catch(e) {
+                console.log('compile2 error: ');
+                console.log(e);
             }
-
-            if (c == ':' && p == 0) {
-                this.command = text.slice(s, i);
-                s = i+1;
-            }else if (c == ',' && p == 0) {
-                this.args.push(text.slice(s, i));
-                s = i+1;
-            }
-        }
-
-        this.args.push(text.slice(s));
-        try {
-            this.cargs = math.compile(this.args);
-        } catch(e) {
-            console.log('compile error: ');
-            console.log(e);
         }
     }
 
@@ -3073,7 +3030,7 @@ function Text(text, pos) {
             this.draw_border(ctx);
         }
 
-        if (this.is_selected()) {
+        if (!presenting && this.is_selected()) {
             // draw cursor
             ctx.fillRect(this.cursor * char_size, -grid_size/2, 2, grid_size);
             if (this.is_text_selected()) {
@@ -3090,14 +3047,28 @@ function Text(text, pos) {
             }
 
             // draw function information
-            let fn = function_before_i(i.t, this.cursor);
-            if (fn.length && math[fn]) {
-                ctx.save();
-                ctx.translate(0, char_size*2);
-                ctx.scale(.5, .5);
-                ctx.globalAlpha = .5;
-                draw_simple((math[fn]+"").split("\n")[0]);
-                ctx.restore();
+            if (i.t) {
+                text = i.t.slice(0, this.cursor);
+                let fn = text.split(/[^A-Za-z]/).pop();
+
+                if (fn.length != 0) {
+                    let keys = Object.keys(math);
+                    let yoff = 0;
+                    for (let i = 0; i < keys.length; i++) {
+                        let key = keys[i];
+
+                        if (key.indexOf(fn) == 0) {
+                            ctx.save();
+                            ctx.translate(0, char_size*2 + yoff);
+                            ctx.scale(.5, .5);
+                            ctx.globalAlpha = .5;
+                            draw_simple(key + ": " + (math[key]+"").split("\n")[0]);
+                            ctx.restore();
+                            yoff += grid_size;
+                        }
+                    }
+                }
+                
             }
         }
 
@@ -3887,6 +3858,10 @@ function transition_with_next(next) {
             if (typeof obj.parse_text == 'function') {
                 obj.parse_text(obj.properties[frame].t);
             }
+
+            if (typeof obj.eval == 'function') {
+                obj.eval();
+            }
         }
     });
 }
@@ -3938,7 +3913,7 @@ function draw_cursor() {
 window.onload = function() {
     
     c = document.createElement("canvas");
-    let w = 1280; let h = 720;
+    let w = window.innerWidth; let h = window.innerHeight;
     c.width = w*scale_factor;
     c.height = h*scale_factor;
     c.style.width = w;
