@@ -16,6 +16,9 @@ if (!isMac) {
     font_anim = "40px Courier New";
 }
 
+var error_timer = 0;
+var error_text = "";
+
 var scale_factor = 2; // retina
 
 // scatter
@@ -23,23 +26,33 @@ var point_size = 6;
 
 var c;
 var ctx;
+var win_width, win_height;
+
 var formula_text;
 
 var animator;
 var objs = [];
+var selected_objs = [];
 var frames;
 var menu;
 var cam;
+var pen;
 var num_frames = 3;
 var frame = 1; // current frame
 var next_frame;
-var playing;
 var rendering = false;
 var presenting = false;
 var debug = false;
+var view_frame = false;
+
+// speech synthesis
+var synth;
+var voices;
 
 var t_ease = 0;
-var t_steps = 60;
+var t_steps = 30;
+var t_percent = 0;
+var t_in_out = 1.0;
 
 var grid_size = 45;
 var mouse_time = 0;
@@ -51,6 +64,7 @@ var new_line;
 var text_copied;
 
 var mouse_down = false;
+var tab = false;
 var ctrl = false;
 var meta = false;
 var shift = false;
@@ -68,6 +82,7 @@ var millis = 0;
 var date = new Date();
 
 var pi2 = 2 * Math.PI;
+var mat_num_width = 140; // matrix max number width
 
 // fn drawing
 let char_size = grid_size/2;
@@ -238,6 +253,12 @@ function para(r, tmin, tmax, units) { // graphs x=f(t) y=g(t) z=h(t) from tmin t
 }
 
 math.import({
+    rad: function(deg) { // converts to radians
+        return deg * math.pi/180;
+    },
+    deg: function(rad) { // converts to degrees
+        return rad * 180.0 / math.pi;
+    },
     loop: function(fn, count) { // function of index 0 to count-1
         if (count <= 0) {
             return;
@@ -521,10 +542,10 @@ math.import({
     graphyz: function(fn) {
         graph(fn, 1, 2, 0);
     },
-    shape: function(points, fill) { // draws line from point to point [[x1,y1,z1], ...], draws arrow
+    draw: function(points, fill) { // draws line from point to point [[x1,y1,z1], ...], draws arrow
         let N = points.size()[0];
         points = cam.graph_to_screen_mat(points);
-
+        
         ctx.save();
         ctx.beginPath();
         let p; let lastp;
@@ -547,6 +568,17 @@ math.import({
             ctx.fill();
         }
         ctx.restore();
+    },
+    drawxy: function(xs, ys) {
+        let N = xs.size()[0];
+        let m = cached([N, 3]);
+        for (let i = 0; i < N; i++) {
+            m._data[i][0] = xs._data[i];
+            m._data[i][1] = ys._data[i];
+            m._data[i][2] = 0;
+        }
+
+        math.draw(m);
     },
     vect: function(a, b) {
 
@@ -766,31 +798,31 @@ math.import({
         }
         ctx.restore();
     },
-    paras: function(r, _ur, _vr, _n=1, f) { // parametric surface r(u,v) with optional field f
+    paras: function(r, _urs, _ure, _vrs, _vre, _n=1, f) { // parametric surface r(u,v) with optional field f
         let n = 10;
 
-        if (_ur <= 0 || _vr <= 0 || n <= 0) {
+        if ((_ure-_urs) <= 0 || (_vre-_vrs) <= 0 || n <= 0) {
             return;
         }
 
-        if (arguments.length >= 4) {
+        if (arguments.length >= 6) {
             n = _n;
         }
 
-        let du = _ur/n;
-        let dv = _vr/n;
+        let du = (_ure-_urs)/n;
+        let dv = (_vre-_vrs)/n;
 
         ctx.save();
 
-        let u = 0;
-        let v = 0;
+        let u = _urs;
+        let v = _vrs;
 
         for (let i = 0; i <= n; i ++) {
-            u = du * i;
+            u = _urs + du * i;
 
             ctx.beginPath();
             for (let j = 0; j <= n; j ++) {
-                v = dv * j;
+                v = _vrs + dv * j;
 
                 let p = r(u, v)._data;
                 let camp = cam.graph_to_screen(p[0], p[1], p[2]);            
@@ -804,12 +836,12 @@ math.import({
         }
 
         for (let i = 0; i <= n; i ++) {
-            v = dv * i;
+            v = _vrs + dv * i;
 
             ctx.beginPath();
             for (let j = 0; j <= n; j ++) {
 
-                u = du * j;
+                u = _urs + du * j;
                 let p = r(u, v)._data;
                 let camp = cam.graph_to_screen(p[0], p[1], p[2]);            
                 if (u == 0) {
@@ -823,10 +855,10 @@ math.import({
 
         if (f) {
             for (let i = 0; i <= n; i ++) {
-                u = du * i;
+                u = _urs + du * i;
     
                 for (let j = 0; j <= n; j ++) {
-                    v = dv * j;
+                    v = _vrs + dv * j;
     
                     let p = r(u, v)._data;
                     
@@ -839,6 +871,17 @@ math.import({
         ctx.restore();
     },
     integral: function(f, a, b, _n) {
+        if (a == b) {
+            return 0;
+        }
+
+        if (a > b) {
+            t = b
+            b = a
+            a = t
+            negate = true;
+        }
+
         let n = 10000;
         if (arguments.length >= 4) {
             n = _n;
@@ -846,8 +889,12 @@ math.import({
 
         let dx = (b-a)/n;
         let sum = 0;
-        for (let x = a; x <=b; x+= dx) {
+        for (let x = a; x <= b; x+= dx) {
             sum += f(x) * dx;
+        }
+
+        if (negate) {
+            sum *= -1;
         }
 
         return sum;
@@ -861,8 +908,1290 @@ math.import({
         return function g(a) {
             return (f(a+h)-f(a))/h;
         }
+    },
+    visnet: function(layers, _pos, _high_conn, _high_neur) { // Draws a neural net layers = [1, 2, 3, 2, 1]
+        layers = layers._data;
+        let pad = 120;
+
+        let props = parser.eval("text_props");
+        let pos = [props.p.x, props.p.y];
+
+        let radius = 14;
+
+        if (arguments.length >= 2) {
+            pos = [pos[0] + _pos._data[0], pos[1] + _pos._data[1]];
+        }
+
+        loc = function(i, j, units) {
+            let pad2 = 250;
+            //return [pos[0] - pad2/2 - j*(pad2+80), pos[1] + pad2/2 - pad2 * units/2 + i*pad2];
+            return [pos[0] - pad2 * units/2 + pad2/2 + i*pad2, -pad + pos[1] - j*pad2];
+        }
+
+        ctx.save();
+
+        // connections
+        let high_conn = [];
+        let high_neur = [];
+
+        for (let j = 0; j < layers.length-1; j++) {
+            let units = layers[j];
+            let units_next = layers[j+1];
+            
+            
+            for (let i = 0; i < units; i++) {
+                let p = loc(i, j, units);
+
+                for (let k = 0; k < units_next; k++) {
+
+                    let p2 = loc(k, j+1, units_next);
+
+                    /*
+                    let vline = [p2[0] - p[0], p2[1] - p[1]];
+                    let mvect = [mouse.x - p[0], mouse.y - p[1]];
+
+                    let dot = mvect[0] * vline[0] + mvect[1] * vline[1];
+
+                    let vlen = math.norm(vline);
+                    let total_len = vlen * math.norm(mvect);
+
+                    if (dot > total_len * .998 && dot < vlen*vlen) {
+                        ctx.strokeStyle = "red";
+                    } else {
+                        ctx.strokeStyle = "black";
+                    } */
+
+                    ctx.strokeStyle = "black";
+
+                    if (high_conn.length == 0) {
+                        let dx1 = p[0] - mouse.x;
+                        let dy1 = p[1] - mouse.y;
+
+                        let dx2 = p2[0] - mouse.x;
+                        let dy2 = p2[1] - mouse.y;
+
+                        let d1 = math.sqrt(dx1*dx1 + dy1*dy1);
+                        let d2 = math.sqrt(dx2*dx2 + dy2*dy2);
+
+                        let vline = [p2[0] - p[0], p2[1] - p[1]];
+                        let vlen = math.norm(vline);
+
+                        if (d1 + d2 < vlen + 1) {
+                            ctx.strokeStyle = "green";
+                            high_conn = [i, k, j]; // unit i to unit k in layer j
+                            high_neur = [[i, j], [k, j+1]];
+                        }
+                    }
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(p[0], p[1]);
+                    ctx.lineTo(p2[0], p2[1]);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        ctx.fillStyle = 'white';
+
+        // neurons
+        for (let j = 0; j < layers.length; j++) {
+            let units = layers[j];
+
+            for (let i = 0; i < units; i++) {
+                let p = loc(i, j, units);
+
+                ctx.strokeStyle = "black";
+
+                // if we have a highlighted connection and we're in the right layer
+                if (high_conn.length != 0) {
+
+                    if (high_conn[2] == j) {
+                        if (high_conn[0] == i) {
+                            if (j == 0) {
+                                ctx.strokeStyle = "blue";
+                            } else {
+                                ctx.strokeStyle = "red";
+                            }
+                        }
+                    } else if (high_conn[2] == j-1) {
+                        if (high_conn[1] == i) {
+                            if (j == 0) {
+                                ctx.strokeStyle = "blue";
+                            } else {
+                                ctx.strokeStyle = "red";
+                            }
+                        }
+                    }
+
+                    
+
+                } else {
+                    let dx = mouse.x - p[0];
+                    let dy = mouse.y - p[1];
+                    
+                    if (dx*dx + dy*dy < 400) {
+                        if (j == 0) {
+                            ctx.strokeStyle = "blue";
+                        } else {
+                            ctx.strokeStyle = "red";
+                        }
+                        
+                        high_neur = [[i, j]];
+                    }
+                }
+
+                ctx.beginPath();
+                ctx.arc(p[0], p[1], radius, 0, 2*Math.PI);
+                ctx.fill();
+                ctx.stroke();
+            }
+        }
+
+        ctx.restore();
+
+        if (arguments.length >= 3) {
+            return [high_conn, high_neur];
+        }
+    },
+    int: function(n) {
+        return n | 0;
+    },
+    elefield: function(charges, location) { // charges = [q1, x1, y1, z1, q2, x2, y2, z2, etc.], provide location for field there
+        charges = charges._data;
+
+        if (arguments.length == 1) {
+            n = 5;
+            let d = 20 / n;
+            let p = [0, 0];
+            let pl = 5; // path length
+
+            //let move = ((millis % 1000) /1000 * .5 + .5);
+            //console.log(move);
+            
+            for (let x = -10; x <= 10; x+=d) {
+                for (let y = -10; y <= 10; y+=d) {
+                    for (let z = -10; z <= 10; z+=d) {
+                        
+                        var xp = x;
+                        var yp = y
+                        var zp = z;
+
+                        for (let j = 0; j <= pl; j++) {
+                            
+                            ctx.beginPath();
+                            p = cam.graph_to_screen(xp, yp, zp);
+                            ctx.moveTo(p[0], p[1]);
+                            let dead = false;
+
+                            // add up forces from charges
+                            for (let i = 0; i < charges.length; i+= 4) {
+                                let q = charges[i];
+                                let cx = charges[i+1];
+                                let cy = charges[i+2];
+                                let cz = charges[i+3];
+
+                                let v = [xp-cx, yp-cy, zp-cz];
+                                let len = math.norm(v);
+                                let l2 = len*len;
+
+                                let c = math.coulomb.value*q/len/l2;
+
+                                if (len > 2) {
+                                    xp += c*v[0];
+                                    yp += c*v[1];
+                                    zp += c*v[2];
+                                } else {
+                                    j = pl;
+                                    dead = true;
+                                }
+                            }
+
+                            if (dead == false) {
+                                p = cam.graph_to_screen(xp, yp, zp);
+                                ctx.strokeStyle = rgbToHex([math.round((pl-j)/pl * 255), 0, math.round(j/pl * 255)]);
+                                ctx.lineTo(p[0], p[1]);
+                                ctx.stroke();
+                            }
+                        }
+                    }
+                }
+            }
+        } else if (arguments.length == 2) {
+            // calculate field at the provided location
+            loc = location._data;
+
+            var xp = loc[0];
+            var yp = loc[1];
+            var zp = loc[2];
+
+            var xt = 0;
+            var yt = 0;
+            var zt = 0;
+
+            // add up forces from charges
+            for (let i = 0; i < charges.length; i+= 4) {
+                let q = charges[i];
+                let cx = charges[i+1];
+                let cy = charges[i+2];
+                let cz = charges[i+3];
+
+                let v = [xp-cx, yp-cy, zp-cz];
+                let len = math.norm(v);
+                let l2 = len*len;
+                
+                let c = math.coulomb.value*q/len/l2; //math.coulomb.value*
+
+                xt += c * v[0];
+                yt += c * v[1];
+                zt += c * v[2];
+            }
+
+            return [xt, yt, zt];
+        }
+    },
+    eleforce: function(charges, j) { // charges = [q1, x1, y1, z1, q2, x2, y2, z2, etc.] force on jth charge
+        charges = charges._data;
+
+        var oc = charges[j*4];
+        var xp = charges[j*4+1];
+        var yp = charges[j*4+2];
+        var zp = charges[j*4+3];
+
+        var fx = 0;
+        var fy = 0;
+        var fz = 0;
+
+        // add up forces from charges
+        for (let i = 0; i < charges.length; i+= 4) {
+            if (i == j * 4) {
+                continue;
+            }
+
+            let q = charges[i];
+            let cx = charges[i+1];
+            let cy = charges[i+2];
+            let cz = charges[i+3];
+
+            let v = [xp-cx, yp-cy, zp-cz];
+            let len = math.norm(v);
+            let l2 = len*len;
+            
+            let c = math.coulomb.value*q*oc/len/l2; //math.coulomb.value*
+
+            fx += c * v[0];
+            fy += c * v[1];
+            fz += c * v[2];
+        }
+
+        return [fx, fy, fz];
+    },
+    vismult: function(W, x) { // visualize matrix vector multiplication
+        let pad = 24;
+
+        let props = parser.eval("text_props");
+        let loc = [props.p.x, props.p.y + pad];
+
+        let result = math.multiply(W, x);
+
+        let xformat = format_matrix(x._data);
+        let rformat = format_matrix(result._data);
+        let Wformat = format_matrix(W._data);
+
+        let rsize = matrix_size(rformat);
+        let Wsize = matrix_size(format_matrix(W._data));
+        let xsize = matrix_size(xformat);
+
+        // draw neural network
+        let rows = W._size[0];
+        let cols = W._size[1];
+
+        let high = math.visnet(math.matrix([x._size[0], W._size[0]]), math.matrix([0, 0]), true);
+        let high_conn = high[0];
+        let high_neur = high[1];
+
+        // draw matrices
+
+        // draw result matrix
+        ctx.save();
+        
+        ctx.font = font_anim;
+
+        ctx.translate(loc[0], loc[1]);
+        draw_matrix(rformat, function(i, j) {
+            ctx.fillStyle = "black";
+            for (let n = 0; n < high_neur.length; n ++) {
+                let highn = high_neur[n];
+                if (highn[1] == 1 && highn[0] == i) {
+                    ctx.fillStyle = "red";
+                }
+            }
+        });
+
+        ctx.fillStyle = "black";
+        ctx.fillText("=", rsize[0] + pad, rsize[1]/2);
+
+        // draw W matrix
+        ctx.translate(rsize[0] + pad*3, 0);
+        draw_matrix(Wformat, function(i, j) {
+            ctx.fillStyle = "black";
+            if (high_conn.length && high_conn[0] == j && high_conn[1] == i) {
+                ctx.fillStyle = "green";
+            }
+        });
+
+        ctx.fillText("*", Wsize[0] + pad, rsize[1]/2);
+
+        // draw x matrix
+        ctx.translate(Wsize[0] + pad*3, rsize[1]/2-xsize[1]/2);
+        draw_matrix(xformat, function(i,j) {
+            ctx.fillStyle = "black";
+
+            for (let n = 0; n < high_neur.length; n ++) {
+                let highn = high_neur[n];
+                if (highn[1] == 0 && highn[0] == i) {
+                    ctx.fillStyle = "blue";
+                }
+            }
+        });
+
+        ctx.restore();
+    },
+    visdot: function(W, x) { // visualize matrix vector multiplication but as dot products
+        let pad = 24;
+
+        let props = parser.eval("text_props");
+        let loc = [props.p.x, props.p.y + pad];
+
+        let result = math.multiply(W, x);
+
+        let rformat = format_matrix(result._data);
+        let rsize = matrix_size(rformat);
+
+        // draw neural network
+        let rows = W._size[0];
+        let cols = W._size[1];
+
+        let high = math.visnet(math.matrix([x._size[0], W._size[0]]), math.matrix([0, 0]), true);
+        let high_conn = high[0];
+        let high_neur = high[1];
+
+        // draw matrices
+
+        // draw result matrix
+        ctx.save();
+
+        ctx.font = font_anim;
+
+        ctx.translate(loc[0], loc[1]);
+        draw_matrix(rformat, function(i, j) {
+            ctx.fillStyle = "black";
+            for (let n = 0; n < high_neur.length; n ++) {
+                let highn = high_neur[n];
+                if (highn[1] == 1 && highn[0] == i) {
+                    ctx.fillStyle = "red";
+                }
+            }
+        });
+
+        ctx.fillStyle = "black";
+        ctx.fillText("=", rsize[0] + pad, rsize[1]/2);
+
+        // draw dot prod matrix
+        ctx.translate(rsize[0] + pad*3, 0);
+        let dp = [];
+
+        let round = pretty_round_one;
+        if (ctrl) {
+            round = pretty_round;
+        }
+
+        for (let i = 0; i < W._data.length; i ++) {
+            let text = "";
+
+            for (let j = 0; j < W._data[0].length; j ++) {
+                text += round(W._data[i][j]) + "*" + round(x._data[j]);
+                if (j < W._data[0].length-1) {
+                    text += " + ";
+                }
+            }
+
+            ctx.fillText(text, 0, i * grid_size + 20);
+        }
+
+        ctx.restore();
+    },
+    magfield: function(path, current, at_point) { // mag field from path [[x1, y1, z1], [x2, y2, z2], ...]
+
+        n = 5;
+        let d = 20 / n;
+
+        let b_at = function(x, y, z, path, current) {
+            path = path._data;
+
+            let b = math.zeros(3);
+            let c = current * math.magneticConstant.value / 4.0 / math.PI; // u0 I / 4 / pi
+
+            for (let i = 0; i < path.length-1; i += 1) {
+                let p1 = path[i];
+                let p2 = path[i+1];
+
+                let r = math.subtract([x, y, z], p1);
+                let rnorm = math.norm(r);
+                r = math.multiply(r, 1/rnorm);
+
+                let ds = math.subtract(p2, p1);
+                let db = math.cross(ds, r);
+                db = math.multiply(db, 1/math.pow(rnorm, 2));
+
+                b = math.add(b, db);
+            }
+
+            return math.multiply(b, c);
+        };
+
+        if (arguments.length >= 3) {
+            at_point = at_point._data;
+            let b = b_at(at_point[0], at_point[1], at_point[2], path, current);
+            
+            return b;
+        } else {
+            for (let x = -10; x <= 10; x+=d) {
+                for (let y = -10; y <= 10; y+=d) {
+                    for (let z = -10; z <= 10; z+=d) {
+    
+                        let b = b_at(x, y, z, path, current);
+    
+                        if (math.norm(b) > .1) {
+                            b = b._data;
+                            draw_vect(x, y, z, x + b[0], y+b[1], z+b[2]);
+                        }
+                    }
+                }
+            }
+        }
+        
+    },
+    circle: function(_p, r, _n) {
+        let n = 10;
+        if (arguments.length >= 3) {
+            n = _n;
+        }
+
+        let path = [];
+        for (let i = 0; i <= n; i++) {
+            let t = i/n * 2 * math.PI;
+            let p = math.add(_p, [math.cos(t)*r, math.sin(t)*r, 0]);
+            path.push(p);
+        }
+
+        return math.matrix(path);
+    },
+    interp: function(a, b, divisions) { // interpolate from [x1,y1,z1,...] -> [x2,y2,z2,...]
+        ad = a._data;
+        bd = b._data;
+
+        divisions -= 1;
+
+        L = cached([divisions+1, ad.length]);
+
+        for (let i = 0; i <= divisions; i ++) {
+            let t = i/divisions;
+            for (let j = 0; j < ad.length; j++) {
+                L._data[i][j] = ad[j] * (1-t) + t * bd[j];
+            }
+        }
+
+        return L;
+    },
+    zer: function() {
+        return [0, 0, 0];
+    },
+    linspace: function(a, b, steps) {
+        let path = [];
+
+        path.push(a);
+
+        if (steps > 2) {
+            let dt = 1/(steps-2);
+            let t = 0;
+            for (let i = 0; i < steps-2; i ++) {
+                path.push(math.add(math.multiply(a, (1-t)),  math.multiply(t, b)));
+                t += dt
+            }
+        }
+
+        path.push(b);
+
+        return math.matrix(path);
+    },
+    say: function(text, _voice, _rate, _pitch) { // text to speech
+        let voice = 11;
+
+        if (_voice) {
+            voice = _voice;
+        }
+
+        var utterThis = new SpeechSynthesisUtterance(text);
+        utterThis.pitch = .8;
+
+        if (arguments.length >= 3) {
+            utterThis.rate = _rate;
+        }
+
+        if (arguments.length >= 4) {
+            utterThis.pitch = _pitch;
+        }
+
+        utterThis.voice = voices[voice];
+        synth.cancel();
+        synth.speak(utterThis);
+    },
+    enableVolMeter: function () {
+        if (!meterInitialized) {
+            meterInitialized = true;
+            initVolumeMeter();
+        }
+    },
+    traceToggle: function() { // enable or disable canvas clearing
+        try {
+            parser.eval("_trace");
+        } catch (e) {
+            parser.set("_trace", false);
+        }
+
+        parser.set("_trace", !parser.eval("_trace"));
+    },
+    drawFarmer: function() {
+
+        ctx.save();
+
+        let props = parser.eval("text_props");
+        let x = props.p.x;
+        let y = props.p.y;
+
+        ctx.translate(x, y);
+        ctx.rotate(props.r);
+        ctx.scale(props.w, props.h);
+        ctx.translate(-x, -y);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -1.25, y + -211);
+        ctx.rotate(0);
+        ctx.scale(4.000000000000001, 4.000000000000001);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -41.25, y + -201);
+        ctx.rotate(6.2831853071795845);
+        ctx.scale(0.6000000000000001, 0.6000000000000001);
+        ctx.arc(0, 0, 20, 1.1102230246251565e-16, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 38.75, y + -201);
+        ctx.rotate(-6.2831853071795845);
+        ctx.scale(0.6000000000000001, 0.6000000000000001);
+        ctx.arc(0, 0, 20, 1.1102230246251565e-16, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -1.25, y + -171);
+        ctx.rotate(0);
+        ctx.scale(0.6000000000000001, 0.6000000000000001);
+        ctx.arc(0, 0, 20, 1.1102230246251565e-16, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -1.25, y + -86);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-20, -45);
+        ctx.lineTo(-40, 45);
+        ctx.lineTo(40, 45);
+        ctx.lineTo(20, -45);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -21.25, y + -21);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, -20);
+        ctx.lineTo(0, 20);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 18.75, y + -21);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, -20);
+        ctx.lineTo(0, 20);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -36.25, y + -101);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(15, -30);
+        ctx.lineTo(-15, 30);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 33.75, y + -101);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-15, -30);
+        ctx.lineTo(15, 30);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -57.91666666666674, y + -154.33333333333331);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-23.333333333333258, -56.666666666666686);
+        ctx.lineTo(-13.333333333333258, 33.333333333333314);
+        ctx.lineTo(36.66666666666674, 23.333333333333314);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 55.41666666666674, y + -154.33333333333331);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(23.333333333333258, -56.666666666666686);
+        ctx.lineTo(13.333333333333258, 33.333333333333314);
+        ctx.lineTo(-36.66666666666674, 23.333333333333314);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -71.25, y + -291);
+        ctx.rotate(-1.308996938995747);
+        ctx.scale(4.000000000000001, 3.400000000000001);
+        ctx.arc(0, 0, 20, 1.308996938995747, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 68.75, y + -291);
+        ctx.rotate(-2.0943951023931953);
+        ctx.scale(4.000000000000001, -3.800000000000001);
+        ctx.arc(0, 0, 20, 1.308996938995747, 2.8797932657906453, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -86.25, y + -206);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(5, -5);
+        ctx.lineTo(-5, 5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.restore();
+        
+    },
+    drawComputer: function() {
+
+        ctx.save();
+
+        let props = parser.eval("text_props");
+        let x = props.p.x;
+        let y = props.p.y;
+
+        ctx.translate(x, y);
+        ctx.rotate(props.r);
+        ctx.scale(props.w, props.h);
+        ctx.translate(-x, -y);
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -3.5, y + -186);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-128, -96);
+        ctx.lineTo(-128, 144);
+        ctx.lineTo(192, 144);
+        ctx.lineTo(192, -96);
+        ctx.lineTo(-128, -96);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -151.5, y + -154.5);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(20, -127.5);
+        ctx.lineTo(-20, -87.5);
+        ctx.lineTo(-20, 102.5);
+        ctx.lineTo(20, 112.5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -186.5, y + -124.5);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(15, -77.5);
+        ctx.lineTo(-15, -27.5);
+        ctx.lineTo(-15, 42.5);
+        ctx.lineTo(15, 62.5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -11.5, y + -22);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-40, -20);
+        ctx.lineTo(-80, 20);
+        ctx.lineTo(80, 20);
+        ctx.lineTo(40, -20);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 53.5, y + -187);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(5, 5);
+        ctx.lineTo(-5, -5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 98.5, y + -197);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, 5);
+        ctx.lineTo(0, -5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 143.5, y + -187);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-5, 5);
+        ctx.lineTo(5, -5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 118.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(0.20000000000000007, 0.20000000000000007);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 118.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(0.6000000000000001, 0.6000000000000001);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 98.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(2.1999999999999997, 0.8);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 28.5, y + -122);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.arc(0, 0, 20, 1.1102230246251565e-16, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 0.5, y + -182);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-112, -80);
+        ctx.lineTo(-112, 120);
+        ctx.lineTo(168, 120);
+        ctx.lineTo(168, -80);
+        ctx.lineTo(-112, -80);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -41.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(2.1999999999999997, 0.8);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -21.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(0.6000000000000001, 0.6000000000000001);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -21.5, y + -162);
+        ctx.rotate(0);
+        ctx.scale(0.20000000000000007, 0.20000000000000007);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 3.5, y + -187);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-5, 5);
+        ctx.lineTo(5, -5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -41.5, y + -197);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, 5);
+        ctx.lineTo(0, -5);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -86.5, y + -187);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(5, 5);
+        ctx.lineTo(-5, -5);
+        ctx.restore();
+        ctx.stroke();
+
+
+
+        ctx.restore();
+    },
+    drawFace: function() {
+        ctx.save();
+
+        let props = parser.eval("text_props");
+        let x = props.p.x;
+        let y = props.p.y;
+
+        ctx.translate(x, y);
+        ctx.rotate(props.r);
+        ctx.scale(props.w, props.h);
+        ctx.translate(-x, -y);
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -56.25, y + -53.5);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.restore();
+        ctx.stroke();
+        
+        // pupil
+        ctx.save();
+        ctx.beginPath();
+        let angle = math.atan2(mouse.y-y+53.5, mouse.x-x+56.25);
+        ctx.translate(x + -56.25, y + -53.5);
+        ctx.rotate(angle);
+        ctx.translate(8, 0);
+        ctx.scale(1, 1);
+        ctx.arc(0, 0, 10, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 56.25, y + -53.5);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.arc(0, 0, 20, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+        // pupil
+        ctx.save();
+        ctx.beginPath();
+        angle = math.atan2(mouse.y-y+53.5, mouse.x-x-56.25);
+        ctx.translate(x + 56.25, y + -53.5);
+        ctx.rotate(angle);
+        ctx.translate(8, 0);
+        ctx.scale(1, 1);
+        ctx.arc(0, 0, 10, 0, 6.283185307179586, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -8.4375, y + 11.1875);
+        ctx.rotate(0);
+        if (meter && meter.volume) {
+            ctx.scale(1-meter.volume*2, 1+meter.volume*2);
+        } else {
+            ctx.scale(1, 1);
+        }
+        ctx.beginPath();
+        ctx.moveTo(-25.3125, -8.4375);
+        ctx.lineTo(42.1875, -8.4375);
+        ctx.lineTo(8.4375, 25.3125);
+        ctx.lineTo(-25.3125, -8.4375);
+        ctx.restore();
+        ctx.stroke();
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 0, y + -36.625);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        let np = 28.125;
+        if (meter && meter.volume) {
+            np -= meter.volume * 20;
+        }
+        ctx.moveTo(0, -28.125);
+        ctx.lineTo(0, np);
+        ctx.lineTo(0-15, 28.125-15);
+        ctx.moveTo(0, np);
+        ctx.lineTo(0+15, 28.125-15);
+        ctx.restore();
+        ctx.stroke();
+
+
+        ctx.restore();
+    },
+    drawDog: function() {
+        ctx.save();
+
+        let props = parser.eval("text_props");
+        let x = props.p.x;
+        let y = props.p.y;
+
+        ctx.translate(x, y);
+        ctx.rotate(props.r);
+        ctx.scale(props.w, props.h);
+        ctx.translate(-x, -y);
+
+
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -23.25, y + -117.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-48, -32);
+        ctx.lineTo(72, -32);
+        ctx.lineTo(72, 48);
+        ctx.lineTo(-48, 48);
+        ctx.lineTo(-48, -32);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + -51.25, y + -149.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1.4);
+        ctx.arc(0, 0, 20, 0, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.beginPath();
+        ctx.translate(x + 28.75, y + -149.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1.4);
+        ctx.arc(0, 0, 20, 0, 3.141592653589795, false);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.translate(x + -42.5, y + -109.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.fillStyle = "#000000";
+        ctx.fillText("-", 0, 0);
+        ctx.fillText(".", 22.5, 0);
+        ctx.fillText("-", 45, 0);
+        ctx.restore();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -16.25, y + -94.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(5, -5);
+        ctx.lineTo(-5, 5);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -6.25, y + -94.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-5, -5);
+        ctx.lineTo(5, 5);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -3.75, y + -34.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-37.5, -35);
+        ctx.lineTo(-47.5, 35);
+        ctx.lineTo(52.5, 35);
+        ctx.lineTo(32.5, -35);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -26.25, y + -24.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(5, -25);
+        ctx.lineTo(-5, 25);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 63.75, y + -19.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(-15, 20);
+        ctx.lineTo(15, -20);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + -1.25, y + -24.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, -25);
+        ctx.lineTo(0, 25);
+        ctx.restore();
+        ctx.stroke();
+        
+        ctx.save();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = "#000000";
+        ctx.translate(x + 18.75, y + -24.75);
+        ctx.rotate(0);
+        ctx.scale(1, 1);
+        ctx.beginPath();
+        ctx.moveTo(0, -25);
+        ctx.lineTo(0, 25);
+        ctx.restore();
+        ctx.stroke();
+        
+        
+        
+
+        ctx.restore();
+    },
+    dirField: function(f) { // draws direction field of dy/dx = f(x,y)
+        for (let x = -10; x <= 10; x+=2) {
+            for (let y = -10; y <= 10; y+=2) {
+                dydx = f(x+.0001, y+.0001); // to avoid asymptotes at x=0 or y=0
+                if (dydx.im) {
+                    continue;
+                }
+                uv = [1, dydx];
+                uv = math.matrix(uv)
+                uv = math.multiply(uv, 1/math.norm(uv));
+                draw_vect(x, y, 0, x+uv._data[0], y+uv._data[1], 0);
+            }
+        }
+    },
+    eulerMeth: function(f, x0, y0, _n, _h) { // approximate solution to diff eq from initial condition y(x0)=y0, n steps
+        n = 10;
+        h = .1;
+
+        if (_n > 0) {
+            n = _n;
+        }
+
+        if (_h > 0) {
+            h = _h;
+        }
+
+        x = x0
+        y = y0
+
+        ctx.beginPath();
+
+        p = cam.graph_to_screen(x, y, 0);
+        ctx.moveTo(p[0], p[1]);
+
+        for (let i = 0; i < n; i++) {
+            dydx = f(x, y);
+
+            if (dydx.im) {
+                ctx.stroke();
+                return math.matrix([x, y]);
+            }
+
+            x += h;
+            y += dydx * h;
+
+            p = cam.graph_to_screen(x, y, 0);
+            ctx.lineTo(p[0], p[1]);
+        }
+
+        ctx.stroke();
+        return math.matrix([x, y]);
     }
 });
+
+function report_error(e) {
+    console.log(e);
+    error_timer = 100;
+    error_text = e;
+}
 
 // undo
 var states = [];
@@ -874,18 +2203,12 @@ function rgb1ToHex(a) {
     return rgbToHex(c);
 }
 
-window.requestAnimFrame = function() {
-    return (
-        window.requestAnimationFrame       || 
-        window.webkitRequestAnimationFrame || 
-        window.mozRequestAnimationFrame    || 
-        window.oRequestAnimationFrame      || 
-        window.msRequestAnimationFrame     || 
-        function(/* function */ callback){
-            window.setTimeout(callback, 1000 / 60);
-        }
-    );
-}();
+// http://www.javascriptkit.com/javatutors/requestanimationframe.shtml
+window.requestAnimationFrame = window.requestAnimationFrame
+    || window.mozRequestAnimationFrame
+    || window.webkitRequestAnimationFrame
+    || window.msRequestAnimationFrame
+    || function(f){return setTimeout(f, 1000/fps)} // simulate calling code 60 
 
 // http://stackoverflow.com/questions/105034/create-guid-uuid-in-javascript
 function guid() {
@@ -935,6 +2258,10 @@ function Animator(fps, canvas, frames, callback) {
 
 function pretty_round(num) {
     return (Math.round(num*100)/100).toFixed(2);
+}
+
+function pretty_round_one(num) {
+    return (Math.round(num*10)/10).toFixed(1);
 }
 
 function draw_r(o, p, d) {
@@ -1288,6 +2615,23 @@ function draw_vect(_x, _y, _z, x, y, z) {
     ctx.stroke();
 }
 
+function draw_brackets(sx, sy, width, height) {
+    
+    ctx.beginPath();
+    ctx.moveTo(sx + 7, sy);
+    ctx.lineTo(sx, sy);
+    ctx.lineTo(sx, sy + height);
+    ctx.lineTo(sx + 7, sy + height);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(sx + width - 7, sy);
+    ctx.lineTo(sx + width, sy);
+    ctx.lineTo(sx + width, sy + height);
+    ctx.lineTo(sx + width - 7, sy + height);
+    ctx.stroke();
+}
+
 function draw_simple(text) {
     for (let i = 0; i < text.length; i++) {
         if (text[i] == "*") {
@@ -1332,6 +2676,77 @@ function draw_fn(fn) {
     ctx.restore();
 
     return size;
+}
+
+function matrix_size(matrix) {
+    if (matrix && matrix.length == 0) {
+        return;
+    }
+
+    let pad = 24;
+
+    return [matrix[0].length * (mat_num_width + pad), matrix.length * grid_size];
+}
+
+function draw_matrix(matrix, color_ij) {
+    ctx.save();
+    ctx.textAlign = "right";
+
+    let pad = 24;
+
+    let shift = 0;
+    if (ctrl) {
+        shift = 24;
+    }
+
+    let max_width = mat_num_width - 20;
+
+    for (let i = 0; i < matrix.length; i ++) {
+        for (let j = 0; j < matrix[i].length; j++) {
+            if (color_ij) {
+                color_ij(i, j);
+            }
+            ctx.fillText(matrix[i][j], j * (mat_num_width + pad) + 124 + shift, i * grid_size + 20, max_width);
+        }
+    }
+
+    size = matrix_size(matrix);
+    draw_brackets(0, 0, size[0], size[1]);
+
+    ctx.restore();
+}
+
+function format_matrix(matrix) {
+    if (matrix.length == 0) {
+        return null;
+    }
+
+    // format for display
+    let formatted = [];
+    let round = pretty_round_one;
+    
+    if (ctrl) {
+        round = pretty_round;
+    }
+    
+    if (typeof matrix[0] == "number") {
+        // array
+        for (let i = 0; i < matrix.length; i ++) {
+            formatted.push([round(matrix[i])]);
+        }
+    } else {
+        // matrix
+        for (let i = 0; i < matrix.length; i ++) {
+            let row = [];
+            for (let j = 0; j < matrix[i].length; j++) {
+                row.push(round(matrix[i][j]));
+            }
+
+            formatted.push(row);
+        }
+    }
+
+    return formatted;
 }
 
 function get_mouse_pos(canvas, evt) {
@@ -1662,6 +3077,16 @@ function Shape(color, path) {
         }
     }
 
+    this.del_props_before = function() {
+        if (this.selected_indices.length == 0) {
+            return;
+        }
+
+        if (this.properties && this.properties[frame-1]) {
+            delete this.properties[frame-1];
+        }
+    }
+
     this.add_point = function(p) {
         let props = this.properties[frame];
         let path = props.path;
@@ -1785,7 +3210,6 @@ function Shape(color, path) {
         c.x /= path.length;
         c.y /= path.length;
 
-        ctx.save();
         ctx.translate(c.x, c.y);
         ctx.rotate(props.r);
         ctx.scale(props.w, props.h);
@@ -1818,7 +3242,6 @@ function Shape(color, path) {
                 let b = between(p1, p2);
                 let d = distance(p1, p2) / grid_size;
                 d = Math.round(d * 10) / 10;
-                ctx.font = font_small;
                 ctx.fillText(d, b.x - c.x, b.y - c.y);
             }
         }
@@ -1834,8 +3257,46 @@ function Shape(color, path) {
             ctx.moveTo(a.x - c.x, a.y - c.y);
             ctx.lineTo(a.x - c.x + Math.cos(theta + Math.PI*3/4) * grid_size/2, a.y - c.y + Math.sin(theta + Math.PI*3/4) * grid_size/2);
         }
+    }
 
-        ctx.restore();
+    this.generate_javascript = function() {
+        let cp = cam.properties[frame].p;
+
+        let props = this.properties[frame];
+        let path = props.path;
+        let c = {x: 0, y: 0};
+        
+        for (let i = 0; i < path.length; i++) {
+            c.x += path[i].x;
+            c.y += path[i].y;
+        }
+
+        c.x /= path.length;
+        c.y /= path.length;
+
+        js = "";
+        js += "ctx.save();\n";
+        js += "ctx.globalAlpha = " + props.c[3] + ";\n";
+        js += "ctx.strokeStyle = \"" + rgbToHex(props.c) + "\";\n";
+        js += "ctx.translate(x + " + (c.x - cp.x) + ", y + " + (c.y - cp.y) + ");\n";
+        js += "ctx.rotate(" + props.r + ");\n";
+        js += "ctx.scale(" + props.w + ", " + props.h + ");\n";
+        js += "ctx.beginPath();\n";
+
+        for (let i = 0; i < path.length; i++) {
+            let p = path[i];
+            
+            if (i == 0) {
+                js += "ctx.moveTo(" + (p.x - c.x) + ", " + (p.y - c.y) + ");\n";
+            } else {
+                js += "ctx.lineTo(" + (p.x - c.x) + ", " + (p.y - c.y) + ");\n";
+            }
+        }
+
+        js += "ctx.restore();\n";
+        js += "ctx.stroke();\n";
+
+        return js;
     }
 
     this.render = function(ctx) {
@@ -1854,16 +3315,12 @@ function Shape(color, path) {
             props = a;
         }
 
-        ctx.beginPath();
-
-        this.draw_path(props);
-
         ctx.save();
+        ctx.beginPath();
         ctx.globalAlpha = props.c[3];
-
         ctx.strokeStyle = rgbToHex(props.c);
+        this.draw_path(props);
         ctx.stroke();
-
         ctx.restore();
     }
 }
@@ -1938,6 +3395,16 @@ function Circle(color, pos) {
             if (key != frame) {
                 delete this.properties[key];
             }
+        }
+    }
+
+    this.del_props_before = function() {
+        if (!this.selected) {
+            return;
+        }
+        
+        if (this.properties && this.properties[frame-1]) {
+            delete this.properties[frame-1];
         }
     }
 
@@ -2033,6 +3500,27 @@ function Circle(color, pos) {
         ctx.restore();
     }
 
+    this.generate_javascript = function() {
+        let props = this.properties[frame];
+        let p = props.p;
+        let cp = cam.properties[frame].p;
+
+        let js = "";
+
+        js += "ctx.save();\n"
+        js += "ctx.beginPath();\n";
+        js += "ctx.translate(x + " + (p.x - cp.x) + ", y + " + (p.y - cp.y) + ");\n"
+        js += "ctx.rotate(" + props.r + ");\n"
+        js += "ctx.scale(" + props.w + ", " + props.h +");\n"
+        js += "ctx.arc(0, 0, 20, " + props.a_s + ", " + props.a_e + ", false);\n";
+        js += "ctx.globalAlpha = " + props.c[3] + ";\n";
+        js += "ctx.strokeStyle = \"" + rgbToHex(props.c) + "\";\n";
+        js += "ctx.restore();\n";
+        js += "ctx.stroke();\n";
+
+        return js;
+    }
+
     this.render = function(ctx) {
 
         let a = this.properties[frame];
@@ -2049,13 +3537,16 @@ function Circle(color, pos) {
             props = a;
         }
 
-        ctx.save();
 
         ctx.beginPath();
-        ctx.fillStyle = "#ffffff";
         this.draw_ellipse(props, ctx);
+
+        ctx.save();
+
+        ctx.fillStyle = "#ffffff";
         ctx.globalAlpha = props.c[3];
         ctx.strokeStyle = rgbToHex(props.c);
+        
         ctx.stroke();
 
         ctx.restore();
@@ -2209,6 +3700,16 @@ function Text(text, pos) {
         }
     }
 
+    this.del_props_before = function() {
+        if (!this.selected) {
+            return;
+        }
+        
+        if (this.properties && this.properties[frame-1]) {
+            delete this.properties[frame-1];
+        }
+    }
+
     this.hidden = function() {
         if (!this.properties[frame]) {
             return true;
@@ -2303,7 +3804,39 @@ function Text(text, pos) {
                     return true;
                 }
             }
-            return false;
+        }
+
+        if (ctrl) {
+            this.properties[frame] = transform_props(key, this.properties[frame]);
+            return true;
+        }
+
+        if (tab) {
+            // auto complete
+            let fn = text.split(/[^A-Za-z]/).pop();
+
+            if (fn.length != 0) {
+                let keys = Object.keys(math);
+
+                for (let i = 0; i < keys.length; i++) {
+                    let key = keys[i];
+
+                    if (key.indexOf(fn) == 0) {
+                        
+                        let new_text = text.split(fn)[0] + keys[i];
+                        if ((math[key]+"").split("\n")[0].indexOf("(") != -1) {
+                            new_text += "(";
+                        }
+                    
+                        this.change_text(new_text);
+                        this.cursor = new_text.length;
+                        this.cursor_selection = this.cursor;
+                        break;
+                    }
+                }
+            }
+
+            return true;
         }
 
         if (key == "Escape") {
@@ -2321,16 +3854,10 @@ function Text(text, pos) {
                 objs.push(newT);
                 newT.select();
                 save_state();
-
             } else {
                 enter_select();
             }
             
-            return false;
-        }
-
-        if (ctrl) {
-            this.properties[frame] = transform_props(key, this.properties[frame]);
             return false;
         }
 
@@ -2427,6 +3954,7 @@ function Text(text, pos) {
         }
 
         this.text_val = "";
+        this.matrix_vals = [];
         let expr = "";
 
         if (this.new) {
@@ -2434,9 +3962,7 @@ function Text(text, pos) {
             this.parse_text(this.properties[frame].t);
         }
 
-        let c = this.cargs[0];
-
-        if (!c) {
+        if (!this.cargs[0]) {
             return;
         }
 
@@ -2458,12 +3984,26 @@ function Text(text, pos) {
         ctx.fillStyle = color;
         ctx.globalAlpha = i.c[3];
 
-        try {
-            let val = c.eval(parser.scope);
+        if (transition.transitioning) {
+            if (a.t != b.t) {
+                // text is diff, cross fade result
+                //ctx.globalAlpha = -math.cos(t_percent*2*math.PI-math.PI)/2 + .5;
+                /*
+                if (t_percent > .5) {
+                    this.parse_text(this.properties[next_frame].t);
+                } */
+            }
+        }
 
-            // only display the value if its not an assignment
+        try {
+            parser.set("text_props", i);
+            
+            let val = this.cargs[0].eval(parser.scope);
+
+            // only display the value if its not an assignment or constant
             let op_type = math.parse(this.args[0]).type;
-            if (op_type.indexOf("Assignment") == -1) {
+            
+            if (op_type.indexOf("Assignment") == -1 && op_type != "ConstantNode") {
                 let type = typeof val;
 
                 // set display text
@@ -2477,24 +4017,7 @@ function Text(text, pos) {
                     
                 } else if (type == "object" && val._data && val._data.length != 0) {
                     // prob a matrix, render entries
-                    let t = [];
-
-                    if (val._data) {
-                        val = val.map(function (value, index, matrix) {
-                            return pretty_round(value);
-                        });
-
-                        let d = val._data;
-                        if (val._size.length == 1) {
-                            t = [d.join(' ')];
-                        } else {
-                            for (let r = 0; r < d.length; r++) {
-                                t.push(d[r].join(' '));
-                            }
-                        }
-                    }
-
-                    this.matrix_vals = t;
+                    this.matrix_vals = val._data;
                     this.text_val = null;
                 } else if (val && 're' in val && val.im) {
                     if (val) {
@@ -2589,7 +4112,7 @@ function Text(text, pos) {
         }
 
         if (presenting) {
-            if (this.args && this.args[0]._data) {
+            if (this.args && this.args[0] && this.args[0]._data) {
 
             } else {
                 if (this.command == "slide" && this.point_in_text_rect(mouse_start)) {
@@ -2736,12 +4259,13 @@ function Text(text, pos) {
 
         if (this.matrix_vals.length != 0) {
             ctx.save();
-            ctx.translate(size.w + grid_size, 0);
+            ctx.translate(size.w, 0);
+            ctx.fillText("=", 0, 0);
+            ctx.translate(135, 0);
 
-            for (let i = 0; i < this.matrix_vals.length; i++) {
-                ctx.textAlign = 'left';
-                ctx.fillText(this.matrix_vals[i], 0, grid_size * i);
-            }
+            ctx.translate(-100, -20);
+            let formatted = format_matrix(this.matrix_vals);
+            draw_matrix(formatted);
             
             ctx.restore();
         } else if (!this.selected && this.text_val && this.text_val.length) {
@@ -2781,8 +4305,7 @@ function Text(text, pos) {
             try {
                 this.cargs = math.compile(this.args);
             } catch(e) {
-                console.log('compile2 error: ');
-                console.log(e);
+                //report_error(e);
             }
         } else {
             this.args = [text];
@@ -2930,7 +4453,7 @@ function Text(text, pos) {
         ctx.save();
         ctx.fillStyle = gray;
         ctx.fillRect(0, this.size.h/2, this.size.w, 4);
-        ctx.fillRect(this.size.w/2-2,this.size.h/2+2,4,12);
+        //ctx.fillRect(this.size.w/2-2,this.size.h/2+2,4,12);
         ctx.restore();
     }
 
@@ -2957,6 +4480,14 @@ function Text(text, pos) {
 
         let pos = i.p;
 
+        if (b && b.c[3] > a.c[3]) {
+            // fade in, use final position always
+            pos = b.p;
+        } else if (b && b.c[3] < a.c[3]) {
+            // fade out, use initial position
+            pos = a.p;
+        }
+
         ctx.save();
 
         ctx.globalAlpha = i.c[3];
@@ -2981,7 +4512,7 @@ function Text(text, pos) {
         this.size = {w: 0, h: 0};
         if (should_draw_text) {
 
-            ctx.translate(i.p.x, i.p.y);
+            ctx.translate(pos.x, pos.y);
             ctx.rotate(i.r);
             ctx.scale(i.w, i.h);
 
@@ -3054,6 +4585,7 @@ function Text(text, pos) {
                 if (fn.length != 0) {
                     let keys = Object.keys(math);
                     let yoff = 0;
+
                     for (let i = 0; i < keys.length; i++) {
                         let key = keys[i];
 
@@ -3068,20 +4600,48 @@ function Text(text, pos) {
                         }
                     }
                 }
-                
             }
         }
 
         ctx.restore();
     }
 
+    this.generate_javascript = function() {
+        let props = this.properties[frame];
+        let p = props.p;
+        let cp = cam.properties[frame].p;
+        let text = props.t;
+
+        let js = "";
+        js += "ctx.save();\n";
+        js += "ctx.translate(x + " + (p.x - cp.x) + ", y + " + (p.y - cp.y) + ");\n"
+        js += "ctx.rotate(" + props.r + ");\n"
+        js += "ctx.scale(" + props.w + ", " + props.h +");\n"
+        js += "ctx.fillStyle = \"" + rgbToHex(props.c) + "\";\n";
+
+        for (let i = 0; i < text.length; i++) {
+            if (text[i] == "*") {
+                js += "ctx.beginPath();\n";
+                js += "ctx.arc(" + (i * char_size + char_size/2) + ", 0, 3, 0, " + pi2 + ");\n";
+                js += "ctx.fill();\n";
+            } else {
+                js += "ctx.fillText(\"" + text[i] + "\", " + (i * char_size) + ", 0);\n";
+            }
+        }
+
+        js += "ctx.restore();\n";
+
+        return js;
+    }
+
     this.parse_text(text);
 }
 
 function Camera() {
-    this.default_props = {p: {x:c.width/2, y:c.height/2}, w: 1, h: 1, rxyz: [0, 0, 0]};
+    this.default_props = {p: {x:c.width/2, y:c.height/2}, w: 1, h: 1, rxyz: [0, 0, 0], style: "3d"};
     this.properties = {};
     this.properties[frame] = copy(this.default_props);
+    this.dragging_rotate = false;
 
     function generate_ticks() {
         let ticks = [];
@@ -3117,6 +4677,44 @@ function Camera() {
 
     this.ticks = generate_ticks();
 
+    this.style = function() {
+        let props = this.properties[frame];
+        if (props) {
+            return props.style;
+        }
+
+        return null;
+    }
+
+    this.set_style = function(style) {
+        let props = this.properties[frame];
+        if (props) {
+            props.style = style;
+            return true;
+        }
+
+        return false;
+    }
+
+    this.mouse_down = function(evt) {
+        if (meta || ctrl) {
+            let props = this.properties[frame];
+            if (!props) {
+                return false;
+            }
+
+            let dx = mouse.x - props.p.x;
+            let dy = mouse.y - props.p.y;
+
+            let dist = dx * dx + dy * dy;
+            this.dragging_rotate = dist > 100000;
+
+            return true;
+        }
+
+        return false;
+    }
+
     this.mouse_drag = function(evt) {
         if (tool != "camera") {
             return;
@@ -3127,10 +4725,26 @@ function Camera() {
         if (meta || ctrl) {
             // rotate
             let r = props.rxyz;
-            a = r[1] - (mouse.y - mouse_last.y)/100;
-            b = r[2] - (mouse.x - mouse_last.x)/100;
 
-            r = [0, a, b];
+            if (!this.dragging_rotate) {
+                a = r[1] - (mouse.y - mouse_last.y)/100;
+                b = r[2] - (mouse.x - mouse_last.x)/100;
+                r = [r[0], a, b];
+                
+            } else {
+                let angle = math.atan2(mouse.y - props.p.y, mouse.x - props.p.x);
+                let angle2 = math.atan2(mouse_last.y - props.p.y, mouse_last.x - props.p.x);
+                let c = (angle - angle2);
+
+                if (Math.abs(c) > 1) {
+                    c = 0;
+                }
+
+                c += r[0];
+
+                r = [c, r[1], r[2]];
+            }
+
             this.rotate(r);
         } else {
             // translate
@@ -3234,6 +4848,8 @@ function Camera() {
     this.screen_to_graph = function(p) {
         return {x: (p.x-this.props.p.x)/(grid_size * this.props.w), y:-(p.y - this.props.p.y)/(grid_size * this.props.h)};
     }
+
+    this.update_props();
 }
 
 function save_state() {
@@ -3250,7 +4866,7 @@ function save_state() {
 }
 
 function undo() {
-    if (states.length > 0) {
+    if (states.length > 1) {
         states = states.splice(0, states.length-1);
         str_to_state(states[states.length-1]);
     }
@@ -3269,20 +4885,34 @@ function guidIndex(objs, obj) {
 }
 
 function state_to_string() {
-    return JSON.stringify({"num_frames": num_frames, "frame": frame, "objs": objs, "cam": cam});
+    return JSON.stringify({"num_frames": num_frames, "frame": frame, "objs": objs, "cam": cam, "pen": pen});
 }
 
 function str_to_state(str) {
     let dict = JSON.parse(str);
-    let arr = dict["objs"];
+    let arr = dict.objs;
 
-    num_frames = dict["num_frames"];
-    frame = dict["frame"];
-    frames.create_buttons();
+    if (dict.num_frames) {
+        num_frames = dict.num_frames;
+    }
+
+    if (dict.frame) {
+        frame = dict.frame;
+        frames.create_buttons();
+    }
+
+    if (dict.pen) {
+        pen = new Pen();
+        pen.drawings = dict.pen.drawings;
+    }
+
+    if (dict.cam && dict.cam.properties) {
+        cam = new Camera();
+        cam.properties = dict.cam.properties;
+        cam.update_props();
+    }
 
     objs = text_array_to_objs(arr, true);
-    cam = new Camera();
-    cam.properties = dict.cam.properties;
 }
 
 function save(objs) {
@@ -3309,6 +4939,18 @@ function load(evt) {
     )(f);
 
     reader.readAsText(f);
+}
+
+function save_local() {
+    localStorage.setItem('page', state_to_string());
+}
+
+function load_local() {
+    // Grab the objects from storage
+    let page = localStorage.getItem('page');
+    if (page && page.length) {
+        str_to_state(page);
+    }
 }
 
 function text_array_to_objs(arr, keep_animation) {
@@ -3446,6 +5088,15 @@ function Frames(pos) {
             return true;
         }
 
+        if ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].indexOf(Number(key)) != -1) {
+            if (!transition.transitioning) {
+                transition_with_next(Number(key));
+                return true;
+            }
+
+            return false;
+        }
+
         return false;
     }
 
@@ -3499,6 +5150,14 @@ function Menu(pos) {
         tool = "text";
     }));
 
+    this.buttons.push(new Button("pen", {x: 0, y: 0}, function(b) {
+        if (tool != "pen") {
+            tool = "pen";
+        } else {
+            pen.clear_drawing();
+        }
+    }));
+
     this.buttons.push(new Button("split", {x: 0, y: 0}, function(b) {
         let N = objs.length;
         for (let i = 0; i < N; i++) {
@@ -3540,12 +5199,12 @@ function Menu(pos) {
         }
     }));
 
-    this.buttons.push(new Button("del props f-1", {x: 0, y: 0}, function(b) {
+    this.buttons.push(new Button("del props before", {x: 0, y: 0}, function(b) {
         let N = objs.length;
         for (let i = 0; i < N; i++) {
             let obj = objs[i];
-            if (obj.properties && obj.properties[frame-1]) {
-                delete obj.properties[frame-1];
+            if (typeof obj.del_props_before == "function") {
+                obj.del_props_before();
             }
         }
     }));
@@ -3602,8 +5261,29 @@ function Menu(pos) {
         tool = "camera";
     }));
 
+    this.buttons.push(new Button("csys", {x: 0, y: 0}, function(b) {
+        let csys_style = cam.style();
+
+        if (csys_style == "3d") {
+            cam.set_style("flat");
+            cam.properties[frame].w = 1.5;
+            cam.properties[frame].h = 1.5;
+            cam.rotate([-Math.PI/2,0,-Math.PI/2]);
+        } else if (csys_style == "flat") {
+            cam.set_style("none");
+        } else if (csys_style == "none") {
+            cam.set_style("3d");
+            cam.properties[frame].w = 1;
+            cam.properties[frame].h = 1;
+        }
+    }));
+
     this.buttons.push(new Button("view xy", {x: 0, y: 0}, function(b) {
         cam.rotate([-Math.PI/2,0,-Math.PI/2]);
+    }));
+
+    this.buttons.push(new Button("frame", {x: 0, y:0}, function(b){
+        view_frame = !view_frame;
     }));
 
     this.buttons.push(new Button("debug", {x: 0, y: 0}, function(b) {
@@ -3617,21 +5297,19 @@ function Menu(pos) {
 
     this.buttons.push(new Button("save local", {x: 0, y: 0}, function(b) {
         // Put the object into storage
-        localStorage.setItem('page', state_to_string());
+        save_local();
     }));
 
     this.buttons.push(new Button("load local", {x: 0, y: 0}, function(b) {
-        // Put the object into storage
-        let page = localStorage.getItem('page');
-        if (page && page.length) {
-            str_to_state(page);
-        }
+        load_local();
     }));
 
     for (let i = 0; i < colors.length; i++) {
 
         let b = new Button("", {x: 0, y: 0}, function(b) {
             let rgb = hexToRgb(colors[i]);
+
+            pen.set_color(rgb);
 
             for (let i = 0; i < objs.length; i++) {
                 let obj = objs[i];
@@ -3687,6 +5365,7 @@ function Transition() {
 
         t_percent = 0.0;
         t_ease = 0.0;
+        t_in_out = 1.0;
         this.steps = steps;
         this.target_frame = target_frame;
         this.transitioning = true;
@@ -3697,12 +5376,14 @@ function Transition() {
         if (this.transitioning) {
             this.step += 1;
             t_percent = this.step / this.steps;
+            t_in_out = -math.cos(t_percent*2*math.PI-math.PI)/2 + .5;
             parser.set('_t', t_percent);
             t_ease = ease_in_out(t_percent);
             parser.set('_tt', t_ease);
             t_ease = sigmoid(t_percent, 1.2, -.4, 14) - sigmoid(t_percent, .2, -.6, 15);
             if (this.step >= this.steps) {
                 t_percent = 1.0;
+                t_in_out = 1.0;
                 t_ease = 1.0;
                 this.completion(this.target_frame);
                 this.step = 0;
@@ -3710,6 +5391,186 @@ function Transition() {
             }
         }
     }
+}
+
+function Pen() {
+    this.drawings = {};
+    this.path = [];
+    this.path_nearby_idx = -1;
+    this.color;
+
+    this.onkeydown = function(evt) {
+        if (tool == "pen" && evt.key == "Esc") {
+            tool = "select";
+        } else if (evt.key == "p") {
+            if (tool == "pen") {
+                this.clear_drawing();
+            }
+            
+            tool = "pen";
+        }
+
+        if (tool == "pen" && evt.key == "Backspace") {
+            // delete path nearby mouse
+            if (this.path_nearby_idx != -1) {
+                this.drawings[frame].splice(this.path_nearby_idx, 1);
+            }
+        }
+    };
+
+    this.mouse_down = function() {
+        if (tool == "pen") {
+            this.path = [];
+            return true;
+        }
+
+        return false;
+    };
+
+    this.mouse_move = function() {
+        if (tool == "pen") {
+            this.path_nearby_idx = -1;
+
+            if (mouse_down) {
+                this.path.push([mouse.x, mouse.y]);
+            }
+
+            let drawing = this.drawings[frame];
+            if (drawing) {
+                for (let i = 0; i < drawing.length; i++) {
+                    let path = drawing[i].p;
+
+                    let x = path[0][0];
+                    let y = path[0][1];
+
+                    let xd = mouse.x - x;
+                    let yd = mouse.y - y;
+
+                    if (xd*xd + yd*yd < 200) {
+                        this.path_nearby_idx = i;
+                    }
+                }
+            }
+
+            return true;
+        }
+
+        return false;
+    };
+
+    this.mouse_up = function() {
+        if (tool == "pen") {
+            // add path to drawing
+            if (this.path && this.path.length) {
+                if (!this.drawings[frame]) {
+                    this.drawings[frame] = [];
+                }
+    
+                this.drawings[frame].push({"p": this.path, "c": this.color});
+                this.path = [];
+            }
+
+            return true;
+        }
+
+        return false;
+    };
+
+    this.set_color = function(rgb) {
+        if (tool == "pen") {
+            this.color = rgbToHex(rgb);
+            return true;
+        }
+
+        return false;
+    };
+
+    this.clear_drawing = function() {
+        if (this.drawings[frame]) {
+            delete this.drawings[frame];
+        }
+
+        this.path = [];
+    };
+
+    this.render = function() {
+
+        ctx.save();
+
+        let draw_path = function(_path) {
+            ctx.beginPath();
+            let path = _path.p;
+            let c = _path.c;
+
+            ctx.strokeStyle = c;
+
+            for (let j = 0; j < path.length; j++) {
+                let x = path[j][0];
+                let y = path[j][1];
+
+                if (j == 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            
+            ctx.stroke();
+        };
+
+        let frame_to_draw = frame;
+
+        if (transition.transitioning) {
+            // fade in out
+            ctx.globalAlpha = -math.cos(t_percent*2*math.PI-math.PI)/2 + .5;
+            if (t_percent > .5) {
+                frame_to_draw = next_frame;
+            }
+
+            if (!this.drawings[next_frame]) {
+                // fade out
+                ctx.globalAlpha = 1-t_percent;
+                frame_to_draw = frame;
+            }
+        }
+
+        if (this.drawings[frame_to_draw]) {
+            // draw the drawing
+            for (let i = 0; i < this.drawings[frame_to_draw].length; i ++) {
+                let path = this.drawings[frame_to_draw][i];
+                
+                if (!presenting) {
+                    ctx.globalAlpha = 1;
+                    if (this.path_nearby_idx == i) {
+                        ctx.globalAlpha = .5;
+                    }
+                }
+
+                draw_path(path);
+            }
+        }
+
+        if (this.path && this.path.length) {
+            draw_path({"p": this.path, "c": this.color});
+        }
+
+        /*
+        if (!presenting) {
+            // onion skin
+            ctx.globalAlpha = .5;
+            if (frame > 1) {
+                if (this.drawings[frame-1]) {
+                    // draw the drawing
+                    for (let i = 0; i < this.drawings[frame-1].length; i ++) {
+                        let path = this.drawings[frame-1][i];
+                        draw_path(path);
+                    }
+                }
+            }
+        } */
+
+        ctx.restore();
+    };
 }
 
 function constrain_frame(f) {
@@ -3734,84 +5595,128 @@ function draw_axes(ctx) {
     if (!cam.R) {
         return;
     }
-
+    
     ctx.save();
 
+    csys_style = cam.style();
+    props = cam.properties[frame];
 
-    // draw gridlines
-    
-    ctx.strokeStyle = "#000000";
-    ctx.globalAlpha = 0.05;
+    // do a fade in and out
+    if (transition.transitioning) {
+        csys_next_style = cam.properties[next_frame].style;
 
-    let axis = cam.ticks[0];
-    axis = math.matrix(axis);
-    axis = cam.graph_to_screen_mat(axis);
-    let N = axis.length;
-    for (let j = 0; j < N; j += 2) {
+        if (csys_next_style != null && csys_next_style != csys_style) {
+            // changing text
+            let constrained = constrain(t_ease);
+            ctx.globalAlpha = Math.cos(constrained * 2 * Math.PI) / 2 + .5;
+            if (constrained >= .5) {
+                csys_style = csys_next_style;
+                if (cam.properties[next_frame]) {
+                    props = cam.properties[next_frame];
+                }
+            }
+        }
+    }
 
-        if (j == 20 || j == 62) {
-            continue;
+    if (csys_style == "3d" || csys_style == "flat") {
+        // draw gridlines
+        ctx.strokeStyle = "#DDDDDD";
+
+        if (csys_style == "3d") {
+            let axis = cam.ticks[0];
+            axis = math.matrix(axis);
+            axis = cam.graph_to_screen_mat(axis);
+            let N = axis.length;
+            for (let j = 0; j < N; j += 2) {
+        
+                if (j == 20 || j == 62) {
+                    continue;
+                }
+        
+                ctx.beginPath();
+                ctx.moveTo(axis[j][0], axis[j][1]);
+                ctx.lineTo(axis[j+1][0], axis[j+1][1]);
+                ctx.stroke();
+            }
+        } else {
+            let w = win_width * 2;
+            let h = win_height * 2;
+
+            let dx = grid_size * props.w;
+            let dy = grid_size * props.h;
+
+            let p = cam.graph_to_screen(0, 0, 0);
+
+            for (let x = p[0] % dx; x < w; x += dx) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, h);
+                ctx.stroke();
+            }
+
+            for (let y = p[1] % dy; y < h; y += dy) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(w, y);
+                ctx.stroke();
+            }
         }
 
-        ctx.beginPath();
-        ctx.moveTo(axis[j][0], axis[j][1]);
-        ctx.lineTo(axis[j+1][0], axis[j+1][1]);
-        ctx.stroke();
-    }
+        ctx.textAlign = 'center';
+        ctx.strokeStyle = "#000000";
 
-
-    ctx.textAlign = 'center';
-    ctx.globalAlpha = .5;
-
-    // center
-    let c = cam.graph_to_screen_mat(math.matrix([[0, 0, 0]]));
-
-    // axes
-    let axes = math.matrix([[10, 0, 0],
-                [0, 10, 0],
-                [0, 0, 10],
-                [-10, 0, 0],
-                [0, -10, 0],
-                [0, 0, -10]]);
-
-    axes = cam.graph_to_screen_mat(axes);
-
-    let labels;
-    if (cam.axes_names) {
-        labels = cam.axes_names;
-    } else {
-        labels = ['x', 'y', 'z'];
-    }
+        // center
+        let c = cam.graph_to_screen(0, 0, 0);
     
-    let colors = ["#FF0000", "#00FF00", "#0000FF"];
+        // axes
+        let axes = math.matrix([[10, 0, 0],
+                    [0, 10, 0],
+                    [0, 0, 10],
+                    [-10, 0, 0],
+                    [0, -10, 0],
+                    [0, 0, -10]]);
     
-    N = axes.length;
-    for (let i = 0; i < N; i ++) {
-        ctx.fillStyle = colors[i%3];
-        ctx.strokeStyle = colors[i%3];
-
-        x = axes[i][0];
-        y = axes[i][1];
-
-        ctx.beginPath();
-        ctx.moveTo(c[0][0], c[0][1]);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-    }
-
-    for (let i = 0; i < 3; i++) {
-        x = axes[i][0];
-        y = axes[i][1];
-
-        ctx.beginPath();
-        ctx.fillStyle = '#FFFFFF';
-        ctx.arc(x, y, 16, 0, 2*Math.PI);
+        axes = cam.graph_to_screen_mat(axes);
+    
+        let labels;
+        if (cam.axes_names) {
+            labels = cam.axes_names;
+        } else {
+            labels = ['x', 'y', 'z'];
+        }
+        
+        let colors = ["#FF0000", "#00FF00", "#0000FF"];
+        
+        N = axes.length;
+        for (let i = 0; i < N; i ++) {
+            ctx.fillStyle = colors[i%3];
+            ctx.strokeStyle = colors[i%3];
+    
+            x = axes[i][0];
+            y = axes[i][1];
+    
+            ctx.beginPath();
+            ctx.moveTo(c[0], c[1]);
+            ctx.lineTo(x, y);
+            ctx.stroke();
+        }
+        
         ctx.globalAlpha = 1;
-        ctx.fill();
-
-        ctx.fillStyle = colors[i%3];
-        ctx.strokeStyle = colors[i%3];
-        ctx.fillText(labels[i], x, y);
+        ctx.lineWidth = 0;
+        
+        for (let i = 0; i < 3; i++) {
+            x = axes[i][0];
+            y = axes[i][1];
+    
+            ctx.beginPath();
+            ctx.fillStyle = '#FFFFFF';
+            ctx.arc(x, y, 16, 0, 2*Math.PI);
+            ctx.fill();
+    
+            ctx.fillStyle = colors[i%3];
+            ctx.strokeStyle = colors[i%3];
+            ctx.fillText(labels[i], x, y);
+        }
     }
 
     ctx.restore();
@@ -3843,7 +5748,7 @@ function transition_with_next(next) {
     next_frame = next;
     change_frames();
     let steps = t_steps;
-    if (!presenting) {
+    if (!presenting || meta || ctrl) {
         // make it instant when menu open
         steps = 0;
     }
@@ -3872,7 +5777,24 @@ function enter_select() {
 }
 
 function draw_cursor() {
-    if (presenting && mouse_time > 0) {
+    if (presenting && tool == "pen") {
+        let pad = 20;
+
+        ctx.save();
+
+        ctx.translate(mouse.x, mouse.y);
+
+        ctx.strokeStyle = pen.color;
+
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(pad/2, pad);
+        ctx.moveTo(0, 0);
+        ctx.lineTo(-pad/2, pad);
+
+        ctx.stroke();
+        ctx.restore();
+    } else if (presenting && mouse_time > 0) {
         // draw a cursor
 
         let mx = mouse.x;
@@ -3913,11 +5835,12 @@ function draw_cursor() {
 window.onload = function() {
     
     c = document.createElement("canvas");
-    let w = window.innerWidth; let h = window.innerHeight;
-    c.width = w*scale_factor;
-    c.height = h*scale_factor;
-    c.style.width = w;
-    c.style.height = h;
+    win_width = window.innerWidth; 
+    win_height = window.innerHeight;
+    c.width = win_width*scale_factor;
+    c.height = win_height*scale_factor;
+    c.style.width = win_width;
+    c.style.height = win_height;
 
     ctx = c.getContext("2d");
     ctx.fillStyle = dark;
@@ -3926,6 +5849,13 @@ window.onload = function() {
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
+
+    // speech synth
+    synth = window.speechSynthesis; // speech synthesis
+    window.speechSynthesis.onvoiceschanged = function() {
+        voices = window.speechSynthesis.getVoices();
+        
+    };
 
     var content = document.getElementById("content");
     content.appendChild(c);
@@ -3966,6 +5896,55 @@ window.onload = function() {
         }
     };
 
+    document.getElementById("gen_js").onclick = function(evt) {
+        let js = "";
+
+        for (let i = 0; i < selected_objs.length; i++) {
+            let obj = selected_objs[i];
+            if (obj.generate_javascript) {
+                let s = obj.generate_javascript();
+                js += s + "\n";
+            }
+        }
+
+        document.getElementById("generic").value = js;
+    };
+
+    document.getElementById("gen_script").onclick = function(evt) {
+        let script = document.getElementById("generic").value;
+        script = script.split("\n");
+
+        let s_clean = [];
+        for (let i = 0; i < script.length; i++) {
+            let s = script[i];
+            if (s.length != 0) {
+                s_clean.push(s);
+            }
+        }
+
+        script = s_clean;
+
+        let t = new Text("", {x: 20, y: win_height*2 - 60});
+        t.properties[frame].w = .6;
+        t.properties[frame].h = .6;
+        objs.push(t);
+
+        for (let i = 0; i < script.length; i++) {
+            let s = script[i];
+            let fr = i + 1;
+            if (!t.properties[fr]) {
+                t.properties[fr] = copy(t.properties[fr-1]);
+            }
+
+            t.properties[fr].t = s;
+        }
+
+        num_frames = script.length;
+        frames.create_buttons();
+
+        save_state();
+    };
+
     objs = [];
 
     transition = new Transition();
@@ -3977,6 +5956,7 @@ window.onload = function() {
 
     menu = new Menu({x: grid_size/4, y: grid_size/2});
     cam = new Camera();
+    pen = new Pen();
 
     $(window).focus(function(){
         meta = false;
@@ -3986,7 +5966,7 @@ window.onload = function() {
     window.onkeydown = function(evt) {
         let key = evt.key;
 
-        if (presenting && tool != "camera" && key == "Escape") {
+        if (key == "Escape" && presenting && tool != "camera" && tool != "pen") {
             presenting = false;
             document.body.style.cursor = '';
             return false;
@@ -3994,6 +5974,10 @@ window.onload = function() {
 
         if (key == "Escape") {
             enter_select();
+        }
+
+        if (key == "Tab") {
+            tab = true;
         }
 
         if (key == "Meta") {
@@ -4059,6 +6043,7 @@ window.onload = function() {
         }
 
         cam.onkeydown(evt);
+        pen.onkeydown(evt);
 
         if (key == " ") {
             return false;
@@ -4070,17 +6055,15 @@ window.onload = function() {
                 tool = tools[key];
             }
         }
-
-        
-        if ([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].indexOf(Number(key)) != -1) {
-            if (!transition.transitioning) {
-                transition_with_next(Number(key));
-            }
-        }
     };
 
     window.onkeyup = function(evt) {
         let key = evt.key;
+
+        if (key == "Tab") {
+            tab = false;
+        }
+
         if (key == "Meta") {
             meta = false;
         }
@@ -4108,6 +6091,14 @@ window.onload = function() {
             math.compile('click()').eval(parser.scope);
         } catch(e) {
 
+        }
+
+        if (cam.mouse_down(evt)) {
+            return;
+        }
+
+        if (pen.mouse_down(evt)) {
+            return;
         }
 
         if (presenting) {
@@ -4156,6 +6147,10 @@ window.onload = function() {
         parser.set('_y', mouse_graph.x);
         parser.set('_z', mouse_graph.y);
 
+        if (pen.mouse_move(evt)) {
+            return;
+        }
+
         if (mouse_down) {
             let captured = false;
             let N = objs.length;
@@ -4181,7 +6176,6 @@ window.onload = function() {
         if (presenting) {
             mouse_time = mouse_duration;
         }
-
 
         mouse_last = get_mouse_pos(c, evt);
         mouse_grid_last = constrain_to_grid(mouse);
@@ -4215,6 +6209,11 @@ window.onload = function() {
             new_line = null;
             selecting = false;
 
+            save_state();
+            return;
+        }
+
+        if (pen.mouse_up(evt)) {
             save_state();
             return;
         }
@@ -4278,7 +6277,7 @@ window.onload = function() {
             xx2 = Math.max(x, x2);
             yy2 = Math.max(y, y2);
 
-            let selected_objs = [];
+            selected_objs = [];
 
             for (let i = 0; i < objs.length; i++) {
                 let obj = objs[i];
@@ -4312,15 +6311,35 @@ window.onload = function() {
 
     save_state();
 
-    var fps = 60;
-    animate();
+    var fps;
+    millis = Date.now();
+    var targ_millis = millis + 1; // set below
+
     function animate() {
-        setTimeout(function() {
-            requestAnimationFrame(animate);
-        }, 1000/fps);
+
+        millis = Date.now();
+        if (millis < targ_millis) {
+            setTimeout(animate, targ_millis-millis);
+            return;
+        }
+
+        targ_millis = millis + 1000/fps;
+
+        if (presenting) {
+            fps = 60;
+        } else {
+            fps = 30; // save power when editing
+        }
 
         parser.set('_frame', t);
-        parser.set('_millis', Date.now());
+        parser.set('_millis', millis);
+        let mp = cam.screen_to_graph({x: mouse.x, y: mouse.y});
+        parser.set('_mx', mp.x);
+        parser.set('_my', mp.y);
+
+        if (meter) {
+            parser.set('_vol', meter.volume);
+        }
 
         if (presenting) {
             mouse_time -= 1;
@@ -4339,7 +6358,7 @@ window.onload = function() {
         let N = objs.length;
         for (let i = 0; i < N; i++) {
             let obj = objs[i];
-            if (obj.command == "e" || obj.new) {
+            if (typeof obj.eval == "function") {
                 obj.eval();
             }
         }
@@ -4367,16 +6386,54 @@ window.onload = function() {
         if (!presenting) {
             frames.render(ctx);
             menu.render(ctx);
+
+            if (error_timer > 0) {
+                ctx.save();
+                ctx.fillStyle = "red";
+                ctx.fillText(error_text, 250, 30);
+                ctx.restore();
+                error_timer -= 1;
+            }
         }
 
+        pen.render();
+
         draw_cursor();
+
+        if (view_frame) {
+            ctx.save();
+            ctx.strokeStyle = "black";
+            ctx.beginPath();
+            let w = 1928; // +8 pixels for padding
+            let h = 1088;
+            ctx.rect(win_width - w/2, win_height - h/2, w, h);
+            ctx.stroke();
+
+            if (!presenting) {
+                ctx.globalAlpha = .1;
+
+                ctx.beginPath();
+                ctx.moveTo(win_width - w/2, win_height);
+                ctx.lineTo(win_width + w/2, win_height);
+                ctx.stroke();
+
+                ctx.beginPath();
+                ctx.moveTo(win_width, win_height - h/2);
+                ctx.lineTo(win_width, win_height + h/2);
+                ctx.stroke();
+
+                ctx.globalAlpha = 1;
+            }
+
+            ctx.restore();
+        }
         
         transition.update();
 
-        if (playing) {
-            transition_with_next(loop_frame(frame + 1));
-        }
-
         t += 1;
+
+        requestAnimationFrame(animate);
     }
+
+    requestAnimationFrame(animate);
 }
